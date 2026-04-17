@@ -416,12 +416,15 @@ end
 -- ============================================
 local GameDetector = {}
 
-GameDetector.GAME_MAP = {
-    -- Sailor Piece (dari scan: PlaceId 77747658251236)
+-- PlaceId → game name (known places)
+GameDetector.PLACE_MAP = {
+    -- Sailor Piece
     [77747658251236] = "sailor_piece",
 
-    -- Blox Fruits
+    -- Blox Fruits (known PlaceIds)
     [2753915549] = "blox_fruits",
+    [4442272183] = "blox_fruits",
+    [7449423635] = "blox_fruits",
 
     -- Fish It!
     [16384073498] = "fish_it",
@@ -439,10 +442,24 @@ GameDetector.GAME_MAP = {
     [6284583030] = "pet_sim_x",
 }
 
+-- GameId (Universe ID) → game name (catches ALL child places)
+GameDetector.GAME_ID_MAP = {
+    [994732206] = "blox_fruits",       -- Blox Fruits universe
+    -- Add more GameIds here as needed
+}
+
 function GameDetector.detect()
     local placeId = game.PlaceId
-    local gameName = GameDetector.GAME_MAP[placeId]
+    local gameId = game.GameId
 
+    -- 1. Check PlaceId first (most specific)
+    local gameName = GameDetector.PLACE_MAP[placeId]
+    if gameName then
+        return gameName, placeId
+    end
+
+    -- 2. Fallback: check GameId (catches unknown child places)
+    gameName = GameDetector.GAME_ID_MAP[gameId]
     if gameName then
         return gameName, placeId
     end
