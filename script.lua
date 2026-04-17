@@ -32,7 +32,7 @@ local userConfig = _G.Config or {}
 
 local CONFIG = {
     -- Server URL (ganti ke VPS nanti)
-    API_URL = userConfig.API_URL or "https://bag-developed-libs-mechanical.trycloudflare.com/api",
+    API_URL = userConfig.API_URL or "https://chicago-greatly-learning-inputs.trycloudflare.com/api",
 
     -- Auth
     USER_ID = userConfig.UserID or nil,
