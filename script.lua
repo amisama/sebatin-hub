@@ -1029,8 +1029,29 @@ end
 AdapterRegistry.register("sailor_piece", SailorPieceAdapter)
 
 -- ============================================
--- BLOX FRUITS ADAPTER (stub — needs game scan)
+-- BLOX FRUITS ADAPTER (from explorer scan)
 -- ============================================
+--[[
+    Confirmed data paths (from explorer + remote tester):
+    
+    LOCAL (always work):
+      leaderstats/ → Bounty/Honor
+      Data/ → Level, Exp, Beli, DevilFruit, FruitCap, StatRefunds, SeaEventsCleared
+      Data/Stats/ → Melee, Sword, Gun, Defense, Demon Fruit (Level + Exp each)
+      Data/Stars/ → Gun, Sword, Melee, Blox Fruit
+    
+    REMOTE (confirmed work):
+      Remotes.GetPlayerStats → Fighting Styles, Swords, Guns unlocked, Money, Fragments, Bounty, Accessories, Fish
+      Remotes.SubclassNetwork.GetPlayerData → Equipped subclass, purchased list
+      Modules.Net.RF/GetCraftPlayerData → Craft items, materials (Leather, Angel Wings, etc), Dragon Quest
+      Modules.Net.RF/GetAllItemValues → Mastery per item, quantities, combat data
+    
+    BROKEN (skipped):
+      Remotes.GetPlayerProfileData → error (needs player ID arg)
+      Modules.Net.RF/ReadPlayerData → returns nil
+      Modules.Net.RF/InventoryBackendService → assertion failed (needs arg)
+]]
+
 local BloxFruitsAdapter = setmetatable({}, {__index = BaseAdapter})
 BloxFruitsAdapter.__index = BloxFruitsAdapter
 
@@ -1040,41 +1061,81 @@ end
 
 function BloxFruitsAdapter:getStats()
     local stats = {}
-    -- leaderstats: Level, Beli, Fragments, etc.
+
+    -- Data folder (CONFIRMED)
+    local dataFolder = LocalPlayer:FindFirstChild("Data")
+    if dataFolder then
+        local fields = {"Level", "Exp", "Beli", "DevilFruit", "FruitCap", "StatRefunds", "SeaEventsCleared"}
+        for _, name in ipairs(fields) do
+            local child = dataFolder:FindFirstChild(name)
+            if child and (child:IsA("IntValue") or child:IsA("NumberValue") or child:IsA("StringValue")) then
+                stats[name] = child.Value
+            end
+        end
+
+        -- Mastery stats (CONFIRMED: Data.Stats.{Category}.Level/Exp)
+        local statsFolder = dataFolder:FindFirstChild("Stats")
+        if statsFolder then
+            for _, cat in ipairs({"Melee", "Sword", "Gun", "Defense", "Demon Fruit"}) do
+                local catFolder = statsFolder:FindFirstChild(cat)
+                if catFolder then
+                    local lvl = catFolder:FindFirstChild("Level")
+                    local xp = catFolder:FindFirstChild("Exp")
+                    if lvl then stats[cat .. "_Level"] = lvl.Value end
+                    if xp then stats[cat .. "_Exp"] = xp.Value end
+                end
+            end
+        end
+
+        -- Stars (CONFIRMED: Data.Stars.*)
+        local starsFolder = dataFolder:FindFirstChild("Stars")
+        if starsFolder then
+            for _, child in ipairs(starsFolder:GetChildren()) do
+                if child:IsA("IntValue") then
+                    stats["Stars_" .. child.Name] = child.Value
+                end
+            end
+        end
+    end
+
+    -- leaderstats (CONFIRMED: Bounty/Honor)
     local leaderstats = LocalPlayer:FindFirstChild("leaderstats")
     if leaderstats then
         for _, child in ipairs(leaderstats:GetChildren()) do
-            if child:IsA("ValueBase") then
+            if child:IsA("IntValue") or child:IsA("NumberValue") then
                 stats[child.Name] = child.Value
             end
         end
     end
-    -- Data folder
-    local dataFolder = LocalPlayer:FindFirstChild("Data")
-    if dataFolder then
-        for _, child in ipairs(dataFolder:GetChildren()) do
-            if child:IsA("ValueBase") then
-                stats[child.Name] = child.Value
-            end
-        end
-    end
+
     return stats
 end
 
 function BloxFruitsAdapter:getCurrency()
     local currency = {}
+
+    local dataFolder = LocalPlayer:FindFirstChild("Data")
+    if dataFolder then
+        local beli = dataFolder:FindFirstChild("Beli")
+        if beli then currency.Beli = beli.Value end
+    end
+
     local leaderstats = LocalPlayer:FindFirstChild("leaderstats")
     if leaderstats then
-        local beli = leaderstats:FindFirstChild("Beli")
-        local fragments = leaderstats:FindFirstChild("Fragments")
-        if beli then currency.Beli = beli.Value end
-        if fragments then currency.Fragments = fragments.Value end
+        for _, child in ipairs(leaderstats:GetChildren()) do
+            if child:IsA("IntValue") then
+                currency[child.Name] = child.Value
+            end
+        end
     end
+
     return currency
 end
 
 function BloxFruitsAdapter:getInventory()
     local inventory = {}
+
+    -- Backpack tools
     local backpack = LocalPlayer:FindFirstChild("Backpack")
     if backpack then
         for _, item in ipairs(backpack:GetChildren()) do
@@ -1083,28 +1144,155 @@ function BloxFruitsAdapter:getInventory()
             end
         end
     end
+
+    -- Character equipped
     local character = LocalPlayer.Character
     if character then
         for _, item in ipairs(character:GetChildren()) do
             if item:IsA("Tool") then
                 table.insert(inventory, {name = item.Name, type = "equipped_weapon", equipped = true})
+            elseif item:IsA("Accessory") then
+                table.insert(inventory, {name = item.Name, type = "equipped_accessory", equipped = true})
             end
         end
     end
+
+    -- Devil Fruit as inventory item
+    local dataFolder = LocalPlayer:FindFirstChild("Data")
+    if dataFolder then
+        local df = dataFolder:FindFirstChild("DevilFruit")
+        if df and df.Value and df.Value ~= "" then
+            table.insert(inventory, {name = df.Value, type = "devil_fruit", equipped = true})
+        end
+    end
+
     return inventory
 end
 
 function BloxFruitsAdapter:getProgress()
     local progress = {}
+
     local dataFolder = LocalPlayer:FindFirstChild("Data")
     if dataFolder then
-        for _, child in ipairs(dataFolder:GetChildren()) do
-            if child:IsA("ValueBase") then
-                progress[child.Name] = child.Value
+        local level = dataFolder:FindFirstChild("Level")
+        local exp = dataFolder:FindFirstChild("Exp")
+        if level then progress.Level = level.Value end
+        if exp then progress.Experience = exp.Value end
+    end
+
+    pcall(function()
+        local character = LocalPlayer.Character
+        if character then
+            local humanoid = character:FindFirstChildOfClass("Humanoid")
+            if humanoid then
+                progress.MaxHealth = humanoid.MaxHealth
+                progress.WalkSpeed = humanoid.WalkSpeed
             end
         end
-    end
+    end)
+
     return progress
+end
+
+function BloxFruitsAdapter:getServerData()
+    local serverData = {}
+    local remotes = ReplicatedStorage:FindFirstChild("Remotes")
+
+    -- Helper: invoke RemoteFunction with timeout
+    local function invokeWithTimeout(rf, timeout)
+        timeout = timeout or 5
+        local result = nil
+        local done = false
+        task.spawn(function()
+            local ok, data = pcall(function() return rf:InvokeServer() end)
+            if ok then result = data end
+            done = true
+        end)
+        local s = tick()
+        while not done and (tick() - s) < timeout do task.wait(0.2) end
+        return result
+    end
+
+    -- 1. GetPlayerStats (CONFIRMED WORK — returns array of stat objects)
+    -- {StatId, DisplayName, Progression, MaxProgression}
+    -- Fighting Styles, Swords, Guns unlocked, Races, Fish, Money, Fragments, Bounty, Accessories
+    pcall(function()
+        if not remotes then return end
+        local rf = remotes:FindFirstChild("GetPlayerStats")
+        if rf and rf:IsA("RemoteFunction") then
+            local data = invokeWithTimeout(rf, 5)
+            if data and type(data) == "table" then
+                -- Convert array to named map for easier dashboard display
+                local statsMap = {}
+                for _, stat in ipairs(data) do
+                    if stat.DisplayName then
+                        statsMap[stat.DisplayName] = {
+                            value = stat.Progression,
+                            max = stat.MaxProgression,
+                        }
+                    end
+                end
+                serverData.playerStats = statsMap
+            end
+        end
+    end)
+
+    -- 2. GetFruitData (CONFIRMED WORK — all fruit info, 11KB)
+    -- Skipping: too large, not useful per-snapshot. Fruit name already in Data.DevilFruit.
+
+    -- 3. SubclassNetwork.GetPlayerData (CONFIRMED WORK — race/subclass)
+    -- {Equipped: "", Purchased: []}
+    pcall(function()
+        if not remotes then return end
+        local subNet = remotes:FindFirstChild("SubclassNetwork")
+        if subNet then
+            local rf = subNet:FindFirstChild("GetPlayerData")
+            if rf and rf:IsA("RemoteFunction") then
+                local data = invokeWithTimeout(rf, 5)
+                if data and type(data) == "table" then
+                    serverData.subclass = data
+                end
+            end
+        end
+    end)
+
+    -- 4. GetCraftPlayerData (CONFIRMED WORK — craft items, materials, dragon quest)
+    pcall(function()
+        local netFolder = ReplicatedStorage:FindFirstChild("Modules")
+        if not netFolder then return end
+        netFolder = netFolder:FindFirstChild("Net")
+        if not netFolder then return end
+        local rf = netFolder:FindFirstChild("RF/GetCraftPlayerData")
+        if rf and rf:IsA("RemoteFunction") then
+            local data = invokeWithTimeout(rf, 5)
+            if data and type(data) == "table" then
+                serverData.craftData = data
+            end
+        end
+    end)
+
+    -- 5. GetAllItemValues (CONFIRMED WORK — mastery, quantities, combat data per item)
+    pcall(function()
+        local netFolder = ReplicatedStorage:FindFirstChild("Modules")
+        if not netFolder then return end
+        netFolder = netFolder:FindFirstChild("Net")
+        if not netFolder then return end
+        local rf = netFolder:FindFirstChild("RF/GetAllItemValues")
+        if rf and rf:IsA("RemoteFunction") then
+            local data = invokeWithTimeout(rf, 5)
+            if data and type(data) == "table" then
+                serverData.itemValues = data
+            end
+        end
+    end)
+
+    -- SKIPPED (broken):
+    -- GetPlayerProfileData — errors: "table index is nil" (needs player ID arg)
+    -- ReadPlayerData — returns nil
+    -- InventoryBackendService — assertion failed (needs arg)
+
+    if next(serverData) then return serverData end
+    return nil
 end
 
 AdapterRegistry.register("blox_fruits", BloxFruitsAdapter)
