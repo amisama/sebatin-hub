@@ -493,7 +493,7 @@ GameDetector.PLACE_MAP = {
     [7449423635] = "blox_fruits",
 
     -- Fish It!
-    [16384073498] = "fish_it",
+    [121864768012064] = "fish_it",
 
     -- Grow a Garden
     [126884695634066] = "grow_a_garden",
