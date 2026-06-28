@@ -1576,10 +1576,9 @@ local function parseFraction(str)
     if not str then return nil end
     local cur, mx = string.match(str, "(%d[%d,]*)%s*/%s*(%d[%d,]*)")
     if cur and mx then
-        return {
-            current = tonumber(string.gsub(cur, ",", "")),
-            max = tonumber(string.gsub(mx, ",", ""))
-        }
+        local curNum = tonumber((string.gsub(cur, ",", "")))
+        local maxNum = tonumber((string.gsub(mx, ",", "")))
+        return { current = curNum, max = maxNum }
     end
     return nil
 end
@@ -1716,7 +1715,7 @@ function FishItAdapter:getCurrency()
                     -- Try to extract number after "Tokens:"
                     local num = string.match(child.Text, "Tokens:%s*([%d,]+)")
                     if num then
-                        currency.Tokens = tonumber(string.gsub(num, ",", ""))
+                        currency.Tokens = tonumber((string.gsub(num, ",", "")))
                         break
                     end
                 end
