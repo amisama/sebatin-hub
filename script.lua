@@ -1455,23 +1455,41 @@ local function getFishItNetFolder()
     return net:FindFirstChild("net")
 end
 
-local fishItNet = getFishItNetFolder()
+local fishItNet = nil
 
--- Safe RemoteFunction invoker with timeout
+-- Lazy-load net folder (game may not have loaded it at script start)
+local function getFishItNet()
+    if fishItNet then return fishItNet end
+    fishItNet = getFishItNetFolder()
+    return fishItNet
+end
+
+-- Safe RemoteFunction invoker with real timeout (5 seconds)
 local function invokeFishItRemote(remotePath)
-    if not fishItNet then return nil end
-    local rf = fishItNet:FindFirstChild(remotePath)
+    local net = getFishItNet()
+    if not net then return nil end
+    local rf = net:FindFirstChild(remotePath)
     if not rf or not rf:IsA("RemoteFunction") then return nil end
-    local ok, result = pcall(function()
-        local co = coroutine.create(function()
+
+    local result = nil
+    local done = false
+
+    task.spawn(function()
+        local ok, res = pcall(function()
             return rf:InvokeServer()
         end)
-        local success, val = coroutine.resume(co)
-        if success then return val end
-        return nil
+        if ok then result = res end
+        done = true
     end)
-    if ok and result then return result end
-    return nil
+
+    local waited = 0
+    while not done and waited < 5 do
+        task.wait(0.1)
+        waited = waited + 0.1
+    end
+
+    if not done then return nil end
+    return result
 end
 
 function FishItAdapter.new()
@@ -1918,7 +1936,11 @@ end
 -- ENTRY POINT
 -- ============================================
 local function main()
-    -- Create GUI
+    if _G.__sebatin_running then
+        return
+    end
+    _G.__sebatin_running = true
+
     GUI.create()
     task.wait(0.3)
 
