@@ -1448,7 +1448,7 @@ local AdapterLoader = {}
 -- Local testing: readfile from adapters/ folder
 -- Production: GitHub raw with hashed filename
 AdapterLoader.URLS = {
-    fish_it = "https://raw.githubusercontent.com/amisala/sebatin-hub/main/hono/adapters/fish-it.lua",
+    fish_it = "https://raw.githubusercontent.com/amisala/sebatin-hub/main/adapters/fish-it.lua",
 }
 
 -- Wrap external adapter to match BaseAdapter interface

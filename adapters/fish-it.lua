@@ -268,6 +268,7 @@ local function collect(env)
                         type = catName,
                         category = string.lower(catName:gsub(" ", "_")),
                         tier = info and info.tier,
+                        icon = info and info.icon,
                         count = item.Count or item.Quantity or 1,
                     })
                 end
