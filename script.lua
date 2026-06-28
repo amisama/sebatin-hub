@@ -424,7 +424,7 @@ function Http.post(endpoint, data)
         end)
     end
 
-    -- Method 4: HttpService:RequestAsync (Roblox native, but needs HttpEnabled)
+    -- Method 4: HttpService:RequestAsync (Roblox native -- errors on non-2xx, so wrap it)
     if not httpFunc then
         pcall(function()
             local ok = pcall(function()
@@ -432,12 +432,21 @@ function Http.post(endpoint, data)
             end)
             if ok and HttpService.RequestAsync then
                 httpFunc = function(opts)
-                    return HttpService:RequestAsync({
-                        Url = opts.Url,
-                        Method = opts.Method or "GET",
-                        Headers = opts.Headers or {},
-                        Body = opts.Body or "",
-                    })
+                    local ok2, result = pcall(function()
+                        return HttpService:RequestAsync({
+                            Url = opts.Url,
+                            Method = opts.Method or "GET",
+                            Headers = opts.Headers or {},
+                            Body = opts.Body or "",
+                        })
+                    end)
+                    if ok2 and result then
+                        return result
+                    end
+                    -- RequestAsync errors on non-2xx -- extract status code from error message
+                    local errMsg = tostring(result)
+                    local code = tonumber(errMsg:match("HTTP (%d+)")) or 0
+                    return { StatusCode = code, Body = errMsg, Success = false }
                 end
                 httpName = "HttpService"
             end
@@ -498,6 +507,11 @@ function Http.post(endpoint, data)
                 return true, response
             else
                 lastErr = "HTTP " .. tostring(code) .. ": " .. tostring(response.Body or response.body or "")
+                -- Don't retry auth errors (401/403) or rate limits (429)
+                if code == 401 or code == 403 or code == 429 then
+                    GUI.setLine("http_auth_err", "Auth/rate error -- no retry", COLOR_ERR)
+                    break
+                end
             end
         elseif not success then
             lastErr = tostring(response)
