@@ -387,24 +387,70 @@ function Http.post(endpoint, data)
     local url = CONFIG.API_URL .. endpoint
     local jsonData = HttpService:JSONEncode(data)
 
-    -- Detect which HTTP function is available
+    -- Detect which HTTP function is available (check all executor variants)
     local httpFunc = nil
     local httpName = "none"
+
+    -- Method 1: global functions
     if request then
         httpFunc = request; httpName = "request"
     elseif http_request then
         httpFunc = http_request; httpName = "http_request"
-    elseif syn and syn.request then
-        httpFunc = syn.request; httpName = "syn.request"
-    elseif http and http.request then
-        httpFunc = http.request; httpName = "http.request"
-    elseif fluxus and fluxus.request then
-        httpFunc = fluxus.request; httpName = "fluxus.request"
+    end
+
+    -- Method 2: executor-specific tables (use pcall to avoid errors)
+    if not httpFunc then
+        pcall(function()
+            if syn and syn.request then httpFunc = syn.request; httpName = "syn.request" end
+        end)
+    end
+    if not httpFunc then
+        pcall(function()
+            if http and http.request then httpFunc = http.request; httpName = "http.request" end
+        end)
+    end
+    if not httpFunc then
+        pcall(function()
+            if fluxus and fluxus.request then httpFunc = fluxus.request; httpName = "fluxus.request" end
+        end)
+    end
+
+    -- Method 3: getgenv / getrenv based
+    if not httpFunc and getgenv then
+        pcall(function()
+            local g = getgenv()
+            if g.request then httpFunc = g.request; httpName = "getgenv.request"
+            elseif g.http_request then httpFunc = g.http_request; httpName = "getgenv.http_request" end
+        end)
+    end
+
+    -- Method 4: HttpService:RequestAsync (Roblox native, but needs HttpEnabled)
+    if not httpFunc then
+        pcall(function()
+            local ok = pcall(function()
+                return HttpService.RequestAsync
+            end)
+            if ok and HttpService.RequestAsync then
+                httpFunc = function(opts)
+                    return HttpService:RequestAsync({
+                        Url = opts.Url,
+                        Method = opts.Method or "GET",
+                        Headers = opts.Headers or {},
+                        Body = opts.Body or "",
+                    })
+                end
+                httpName = "HttpService"
+            end
+        end)
     end
 
     if not httpFunc then
         GUI.setLine("http_err", "ERROR: No HTTP function found!", COLOR_ERR)
-        GUI.setLine("http_avail", "request=" .. tostring(request ~= nil) .. " http_request=" .. tostring(http_request ~= nil), Color3.fromRGB(255, 100, 100))
+        local avail = "request=" .. tostring(request ~= nil)
+        avail = avail .. " http_request=" .. tostring(http_request ~= nil)
+        avail = avail .. " syn=" .. tostring(syn ~= nil)
+        avail = avail .. " getgenv=" .. tostring(getgenv ~= nil)
+        GUI.setLine("http_avail", avail, Color3.fromRGB(255, 100, 100))
         return false, nil
     end
 
