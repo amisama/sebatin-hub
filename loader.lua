@@ -1,10 +1,14 @@
 --[[
     ============================================
-    ZetsuTrackStat HUB v3.0 - Roblox Stats Tracker
+    ZetsuTrackStat HUB v4.0 - Loader (Entry Point)
     ============================================
     Multi-game tracker dengan floating dot GUI.
-    Auto-detect game via PlaceId, load adapter.
-    
+    Auto-detect game via PlaceId, load adapter via loadstring.
+
+    Architecture:
+      loader.lua  (this file) — GUI + HTTP + auth + game detect
+      adapters/[game].lua      — per-game data collector (Luraph obfuscated)
+
     Compatible: Codex, Delta, Fluxus, Synapse, dll
     ============================================
 ]]
@@ -1431,621 +1435,110 @@ end
 AdapterRegistry.register("blox_fruits", BloxFruitsAdapter)
 
 -- ============================================
--- FISH IT ADAPTER
+-- ADAPTER LOADER (loadstring external adapters)
 -- ============================================
--- Scan results (PlaceId 121864768012064):
---   Net: ReplicatedStorage.Packages._Index["sleitnick_net@0.2.0"].net
---   leaderstats: Caught (Int), Rarest Fish (String)
---   Key remotes: RF/GetPlayerData, RF/SellAllItems, RF/SellItem,
---                RF/Trading/LoadPlayerInventory, RF/Pets/Equip, RF/Pets/Unequip,
---                RF/Pets/OpenEgg, RF/ChargeFishingRod, RF/RequestFishingMinigameStarted
---   Modules: CurrencyUtility, PlayerStatsUtility, InventoryMapping, LevelController
+-- Loads per-game adapters from URL (GitHub raw / self-hosted).
+-- Adapter contract: return { gameName, collect(env) }
+--   env = { GUI, player, Http, CONFIG }
+--   collect(env) returns { stats, inventory, currency, progress, serverData }
 -- ============================================
-local FishItAdapter = setmetatable({}, {__index = BaseAdapter})
-FishItAdapter.__index = FishItAdapter
+local AdapterLoader = {}
 
--- ============================================
--- GUI SCRAPING HELPERS
--- Net folder remotes are inaccessible at runtime (game deletes/relocates them).
--- All data is scraped from PlayerGui ScreenGuis.
--- ============================================
+-- Adapter URLs (hashed filenames for obfuscated adapters)
+-- Local testing: readfile from adapters/ folder
+-- Production: GitHub raw with hashed filename
+AdapterLoader.URLS = {
+    fish_it = "https://raw.githubusercontent.com/amisala/sebatin-hub/main/hono/adapters/fish-it.lua",
+}
 
--- Find a ScreenGui by name in PlayerGui (checks CoreGui too via gethui)
-local function findFishItGui(guiName)
-    local pg = LocalPlayer:FindFirstChild("PlayerGui")
-    if pg then
-        local g = pg:FindFirstChild(guiName)
-        if g then return g end
-    end
-    -- Check CoreGui (for stealth scripts that parent to CoreGui)
-    local hui = gethui and gethui() or nil
-    if hui then
-        local g = hui:FindFirstChild(guiName)
-        if g then return g end
-    end
-    return nil
-end
+-- Wrap external adapter to match BaseAdapter interface
+function AdapterLoader.load(gameName)
+    local url = AdapterLoader.URLS[gameName]
+    if not url then return nil end
 
--- Recursively collect all TextLabel/TextButton Text from a GUI instance
--- Returns flat list of {path=..., text=..., instance=...}
-local function scrapeAllText(parent, maxDepth, prefix, out, depth)
-    maxDepth = maxDepth or 6
-    depth = depth or 0
-    out = out or {}
-    prefix = prefix or parent.Name
-    if depth >= maxDepth then return out end
+    local source = nil
 
-    for _, child in ipairs(parent:GetChildren()) do
-        local childPath = prefix .. "/" .. child.Name
-        if child:IsA("TextLabel") or child:IsA("TextButton") then
-            local txt = child.Text
-            if txt and #txt > 0 then
-                table.insert(out, {path = childPath, text = txt, instance = child})
-            end
-        elseif child:IsA("Frame") or child:IsA("ScrollingFrame") or child:IsA("CanvasGroup") or child:IsA("UIPane") then
-            scrapeAllText(child, maxDepth, childPath, out, depth + 1)
-        end
-    end
-    return out
-end
-
--- Find first TextLabel/TextButton with exact text match (case-insensitive)
-local function findLabelByText(parent, text, maxDepth, depth)
-    maxDepth = maxDepth or 8
-    depth = depth or 0
-    if depth >= maxDepth then return nil end
-
-    for _, child in ipairs(parent:GetChildren()) do
-        if child:IsA("TextLabel") or child:IsA("TextButton") then
-            if child.Text and #child.Text > 0 then
-                local a = string.lower(child.Text)
-                local b = string.lower(text)
-                if a == b then return child end
-                -- Partial match
-                if string.find(a, b, 1, true) then return child end
-            end
-        end
-        if child:IsA("GuiObject") or child:IsA("Frame") or child:IsA("ScrollingFrame") or child:IsA("CanvasGroup") or child:IsA("UIPane") then
-            local found = findLabelByText(child, text, maxDepth, depth + 1)
-            if found then return found end
-        end
-    end
-    return nil
-end
-
--- Find ALL TextLabels/TextButtons containing text (case-insensitive)
-local function findAllLabelsByText(parent, text, maxDepth, depth, out)
-    maxDepth = maxDepth or 8
-    depth = depth or 0
-    out = out or {}
-    if depth >= maxDepth then return out end
-
-    for _, child in ipairs(parent:GetChildren()) do
-        if child:IsA("TextLabel") or child:IsA("TextButton") then
-            if child.Text and #child.Text > 0 then
-                if string.find(string.lower(child.Text), string.lower(text), 1, true) then
-                    table.insert(out, child)
-                end
-            end
-        end
-        if child:IsA("GuiObject") or child:IsA("Frame") or child:IsA("ScrollingFrame") or child:IsA("CanvasGroup") or child:IsA("UIPane") then
-            findAllLabelsByText(child, text, maxDepth, depth + 1, out)
-        end
-    end
-    return out
-end
-
--- Parse number strings like "28.16M", "1.38M", "45", "28,160,000", "232k kg"
-local function parseFishItNumber(str)
-    if not str or type(str) ~= "string" then return nil end
-    -- Remove non-essential chars but keep digits, dots, commas, k/m/b
-    local cleaned = string.gsub(str, "[^%d%.%,kKmMbB]", "")
-    if #cleaned == 0 then return nil end
-
-    -- Check for suffix
-    local lower = string.lower(cleaned)
-    local suffix = string.sub(lower, #lower)
-    local mult = 1
-    if suffix == "k" then
-        mult = 1000
-        cleaned = string.sub(cleaned, 1, #cleaned - 1)
-    elseif suffix == "m" then
-        mult = 1000000
-        cleaned = string.sub(cleaned, 1, #cleaned - 1)
-    elseif suffix == "b" then
-        mult = 1000000000
-        cleaned = string.sub(cleaned, 1, #cleaned - 1)
-    end
-
-    -- Remove commas
-    cleaned = string.gsub(cleaned, ",", "")
-    local num = tonumber(cleaned)
-    if not num then return nil end
-    return num * mult
-end
-
--- Parse "Lvl 490" -> 490
-local function parseLevel(str)
-    if not str then return nil end
-    local num = string.match(str, "%d+")
-    return num and tonumber(num) or nil
-end
-
--- Parse "480/4,500" or "480/4500" -> {current=480, max=4500}
-local function parseFraction(str)
-    if not str then return nil end
-    local cur, mx = string.match(str, "(%d[%d,]*)%s*/%s*(%d[%d,]*)")
-    if cur and mx then
-        local curNum = tonumber((string.gsub(cur, ",", "")))
-        local maxNum = tonumber((string.gsub(mx, ",", "")))
-        return { current = curNum, max = maxNum }
-    end
-    return nil
-end
-
-function FishItAdapter.new()
-    return setmetatable(BaseAdapter.new("fish_it"), FishItAdapter)
-end
-
--- ============================================
--- getStats: leaderstats + GUI-scraped level/luck/playtime
--- ============================================
-function FishItAdapter:getStats()
-    local stats = {}
-
-    -- 1. leaderstats (Caught, Rarest Fish)
-    local leaderstats = LocalPlayer:FindFirstChild("leaderstats")
-    if leaderstats then
-        for _, child in ipairs(leaderstats:GetChildren()) do
-            if child:IsA("ValueBase") then
-                stats[child.Name] = child.Value
-            end
+    -- Try 1: HTTP fetch (primary — works on all executors)
+    local httpFunc = request or http_request or (syn and syn.request) or (http and http.request) or (fluxus and fluxus.request)
+    if httpFunc then
+        GUI.setLine("adapter_fetch", "Fetching adapter: " .. gameName .. "...", COLOR_INIT)
+        local ok, response = pcall(httpFunc, {
+            Url = url,
+            Method = "GET",
+        })
+        if ok and response and response.StatusCode == 200 and response.Body and #response.Body > 0 then
+            source = response.Body
+            GUI.setLine("adapter_fetch", "Adapter fetched (" .. #source .. " bytes)", COLOR_LIVE)
+        else
+            GUI.setLine("adapter_fetch", "HTTP failed: " .. tostring(response and response.StatusCode or "?"), COLOR_ERR)
         end
     end
 
-    -- 2. Level from XP ScreenGui
-    pcall(function()
-        local xpGui = findFishItGui("XP")
-        if xpGui then
-            local lvlLabel = findLabelByText(xpGui, "Lvl", 4)
-            if lvlLabel then
-                stats.Level = parseLevel(lvlLabel.Text)
-            end
-            local dblXp = findLabelByText(xpGui, "2x XP", 4)
-            if dblXp then
-                stats.DoubleXP = true
-            end
-        end
-    end)
-
-    -- 3. Luck stats from Settings ScreenGui
-    pcall(function()
-        local settingsGui = findFishItGui("Settings")
-        if settingsGui then
-            local allText = scrapeAllText(settingsGui, 10)
-            for _, entry in ipairs(allText) do
-                local txt = entry.text
-                if string.find(txt, "Bonus Luck", 1, true) then
-                    local pct = string.match(txt, "%+?(%d+)%%")
-                    stats.BonusLuckPct = pct and tonumber(pct) or nil
-                elseif string.find(txt, "Level Luck", 1, true) then
-                    local pct = string.match(txt, "%+?(%d+)%%")
-                    stats.LevelLuckPct = pct and tonumber(pct) or nil
-                elseif string.find(txt, "Mutation Chance", 1, true) then
-                    local pct = string.match(txt, "x?(%d+%.?%d*)%%")
-                    stats.MutationChancePct = pct and tonumber(pct) or nil
-                elseif string.find(txt, "Shiny Chance", 1, true) then
-                    local pct = string.match(txt, "(%d+%.?%d*)%%")
-                    stats.ShinyChancePct = pct and tonumber(pct) or nil
-                elseif string.match(txt, "%d+ Hours? %d+ Minutes?") or string.match(txt, "%d+h %d+m") then
-                    stats.Playtime = txt
-                elseif string.find(txt, "Monthly Fish", 1, true) then
-                    local num = string.match(txt, "Monthly Fish:%s*(%d+)")
-                    stats.MonthlyFish = num and tonumber(num) or nil
-                elseif string.find(txt, "Monthly Levels") then
-                    local num = string.match(txt, "Monthly Levels:%s*(%d+)")
-                    stats.MonthlyLevels = num and tonumber(num) or nil
-                end
-            end
-        end
-    end)
-
-    -- 4. Player attributes (48 attributes available)
-    pcall(function()
-        for _, attr in ipairs(LocalPlayer:GetAttributes()) do
-            -- GetAttribute returns nil for non-existent, so we iterate differently
-        end
-        -- Direct attribute reads for known fields
-        local attrNames = {"SelectedRarity", "FriendshipBoost", "FishingState", "SelectedRod", "SelectedBait"}
-        for _, name in ipairs(attrNames) do
-            local val = LocalPlayer:GetAttribute(name)
-            if val ~= nil then
-                stats["attr." .. name] = val
-            end
-        end
-    end)
-
-    return stats
-end
-
--- ============================================
--- getCurrency: Coins from Events/CurrencyCounter, Tokens from various
--- ============================================
-function FishItAdapter:getCurrency()
-    local currency = {}
-
-    -- 1. Coins from Events ScreenGui CurrencyCounter/Counter
-    pcall(function()
-        local eventsGui = findFishItGui("Events")
-        if eventsGui then
-            for _, child in ipairs(eventsGui:GetDescendants()) do
-                if child.Name == "Counter" and child:IsA("TextLabel") then
-                    local parent = child.Parent
-                    if parent and parent.Name == "CurrencyCounter" then
-                        local coins = parseFishItNumber(child.Text)
-                        if coins then
-                            currency.Coins = coins
-                            break
-                        end
-                    end
-                end
-            end
-        end
-    end)
-
-    -- 2. Fallback: any Counter with parseable number (skip "0" and "?")
-    if not currency.Coins then
-        pcall(function()
-            local eventsGui = findFishItGui("Events")
-            if eventsGui then
-                for _, child in ipairs(eventsGui:GetDescendants()) do
-                    if child.Name == "Counter" and child:IsA("TextLabel") then
-                        local coins = parseFishItNumber(child.Text)
-                        if coins and coins > 0 then
-                            currency.Coins = coins
-                            break
-                        end
-                    end
-                end
-            end
-        end)
-    end
-
-    -- 3. Tokens (from TokenShardsAd or Trading)
-    pcall(function()
-        local tokenGui = findFishItGui("TokenShardsAd")
-        if tokenGui then
-            for _, child in ipairs(tokenGui:GetDescendants()) do
-                if child:IsA("TextLabel") and string.find(child.Text, "Tokens:", 1, true) then
-                    -- Try to extract number after "Tokens:"
-                    local num = string.match(child.Text, "Tokens:%s*([%d,]+)")
-                    if num then
-                        currency.Tokens = tonumber((string.gsub(num, ",", "")))
-                        break
-                    end
-                end
-            end
-        end
-    end)
-
-    -- 4. From leaderstats (if any currency values)
-    local leaderstats = LocalPlayer:FindFirstChild("leaderstats")
-    if leaderstats then
-        for _, child in ipairs(leaderstats:GetChildren()) do
-            if child:IsA("IntValue") or child:IsA("NumberValue") then
-                if not currency[child.Name] then
-                    currency[child.Name] = child.Value
-                end
-            end
+    -- Try 2: workspace file (dev fallback — executor workspace folder)
+    if not source and readfile then
+        local devPath = "zetsu-trackstat/adapters/" .. gameName .. ".lua"
+        local ok, content = pcall(readfile, devPath)
+        if ok and content and #content > 0 then
+            source = content
+            GUI.setLine("adapter_fetch", "Loaded from workspace file", COLOR_LIVE)
         end
     end
 
-    return currency
-end
-
--- ============================================
--- getInventory: scrape Inventory ScreenGui for item names, counts, equipped
--- ============================================
-function FishItAdapter:getInventory()
-    local inventory = {}
-
-    -- 1. Backpack tools (fishing rods)
-    local backpack = LocalPlayer:FindFirstChild("Backpack")
-    if backpack then
-        for _, item in ipairs(backpack:GetChildren()) do
-            if item:IsA("Tool") then
-                table.insert(inventory, {
-                    name = item.Name,
-                    type = "rod",
-                    equipped = false,
-                    category = "rods"
-                })
-            end
-        end
+    if not source then
+        GUI.setLine("adapter_src", "Adapter source not found: " .. gameName, COLOR_ERR)
+        return nil
     end
 
-    -- 2. Character equipped tool (check !!!EQUIPPED_TOOL!!! model or Tool)
-    pcall(function()
-        local character = LocalPlayer.Character
-        if character then
-            for _, item in ipairs(character:GetChildren()) do
-                if item:IsA("Tool") then
-                    table.insert(inventory, {
-                        name = item.Name,
-                        type = "equipped_rod",
-                        equipped = true,
-                        category = "rods"
-                    })
-                end
-            end
-            -- Also check !!!EQUIPPED_TOOL!!! model
-            local equippedModel = character:FindFirstChild("!!!EQUIPPED_TOOL!!!")
-            if equippedModel then
-                for _, child in ipairs(equippedModel:GetChildren()) do
-                    if child:IsA("Tool") or child:IsA("Model") then
-                        table.insert(inventory, {
-                            name = child.Name,
-                            type = "equipped_tool",
-                            equipped = true,
-                            category = "rods"
-                        })
-                    end
-                end
-            end
-        end
-    end)
-
-    -- 3. Inventory ScreenGui: scrape equipped items count + ability info
-    pcall(function()
-        local invGui = findFishItGui("Inventory")
-        if invGui then
-            local allText = scrapeAllText(invGui, 12)
-
-            local seen = {}
-            for _, entry in ipairs(allText) do
-                local txt = entry.text
-
-                local itemName = string.match(txt, "^(.+)%-%x%x%x%x%x%x%x%x%-%x+")
-                if itemName and not seen[txt] then
-                    seen[txt] = true
-                    local category = "items"
-                    local lowerPath = string.lower(entry.path)
-                    if string.find(lowerPath, "fish", 1, true) then category = "fish"
-                    elseif string.find(lowerPath, "bait", 1, true) then category = "baits"
-                    elseif string.find(lowerPath, "rod", 1, true) then category = "rods"
-                    elseif string.find(lowerPath, "charm", 1, true) then category = "charms"
-                    elseif string.find(lowerPath, "pet", 1, true) then category = "pets"
-                    elseif string.find(lowerPath, "emote", 1, true) then category = "emotes"
-                    elseif string.find(lowerPath, "ability", 1, true) then category = "abilities"
-                    elseif string.find(lowerPath, "enchant", 1, true) then category = "enchants"
-                    end
-
-                    table.insert(inventory, {
-                        name = itemName,
-                        type = "inventory_item",
-                        equipped = false,
-                        category = category,
-                        rawName = txt,
-                    })
-                end
-            end
-
-            for _, entry in ipairs(allText) do
-                if string.find(entry.path, "WeightFrame", 1, true) then
-                    local weight = string.match(entry.text, "([%d%.]+%s*[kKmM]?%s*kg)")
-                    if weight then
-                        table.insert(inventory, {
-                            name = "Fish",
-                            type = "fish_weight",
-                            equipped = false,
-                            category = "fish",
-                            weight = weight,
-                            weightValue = parseFishItNumber(entry.text),
-                        })
-                    end
-                end
-            end
-
-            local abilityName = nil
-            for _, entry in ipairs(allText) do
-                if string.find(entry.path, "AbilityName", 1, true) then
-                    abilityName = entry.text
-                end
-            end
-            if abilityName and #abilityName > 0 then
-                table.insert(inventory, {
-                    name = abilityName,
-                    type = "ability",
-                    equipped = true,
-                    category = "abilities",
-                })
-            end
-        end
-    end)
-
-    -- 4. Backpack ScreenGui (fish weights visible)
-    pcall(function()
-        local bpGui = findFishItGui("Backpack")
-        if bpGui then
-            local allText = scrapeAllText(bpGui, 5)
-            for _, entry in ipairs(allText) do
-                if string.find(entry.path, "WeightFrame", 1, true) then
-                    local weight = string.match(entry.text, "([%d%.]+%s*[kKmM]?%s*kg)")
-                    if weight then
-                        table.insert(inventory, {
-                            name = "BackpackFish",
-                            type = "fish_weight",
-                            equipped = false,
-                            category = "fish",
-                            weight = weight,
-                            weightValue = parseFishItNumber(entry.text),
-                        })
-                    end
-                end
-            end
-        end
-    end)
-
-    return inventory
-end
-
--- ============================================
--- getProgress: leaderstats + level + bag capacity + category counts
--- ============================================
-function FishItAdapter:getProgress()
-    local progress = {}
-
-    -- 1. From leaderstats (Caught, Rarest Fish)
-    local leaderstats = LocalPlayer:FindFirstChild("leaderstats")
-    if leaderstats then
-        local caught = leaderstats:FindFirstChild("Caught")
-        if caught then progress.Caught = caught.Value end
-        local rarest = leaderstats:FindFirstChild("Rarest Fish")
-        if rarest then progress.RarestFish = rarest.Value end
+    -- loadstring + execute
+    local fn, err = loadstring(source)
+    if not fn then
+        GUI.setLine("adapter_load", "loadstring error: " .. tostring(err):sub(1, 80), COLOR_ERR)
+        return nil
     end
 
-    -- 2. Level from XP ScreenGui
-    pcall(function()
-        local xpGui = findFishItGui("XP")
-        if xpGui then
-            local lvlLabel = findLabelByText(xpGui, "Lvl", 4)
-            if lvlLabel then
-                progress.Level = parseLevel(lvlLabel.Text)
-            end
-        end
-    end)
+    local ok, adapterTable = pcall(fn)
+    if not ok or type(adapterTable) ~= "table" then
+        GUI.setLine("adapter_load", "Adapter exec error: " .. tostring(adapterTable):sub(1, 80), COLOR_ERR)
+        return nil
+    end
 
-    -- 3. Equipped items/pets fractions from Inventory ScreenGui
-    pcall(function()
-        local invGui = findFishItGui("Inventory")
-        if invGui then
-            local allText = scrapeAllText(invGui, 12)
-            for _, entry in ipairs(allText) do
-                local frac = parseFraction(entry.text)
-                if frac then
-                    local lowerPath = string.lower(entry.path)
-                    if string.find(lowerPath, "pet", 1, true) then
-                        progress.EquippedPets = frac
-                    elseif string.find(lowerPath, "inventory2", 1, true) or string.find(entry.text, "Equipped Items", 1, true) then
-                        progress.EquippedItems = frac
-                    end
-                end
-            end
-        end
-    end)
+    if not adapterTable.collect or type(adapterTable.collect) ~= "function" then
+        GUI.setLine("adapter_load", "Adapter missing collect()", COLOR_ERR)
+        return nil
+    end
 
-    -- 4. Category counts from Inventory notification badges
-    pcall(function()
-        local invGui = findFishItGui("Inventory")
-        if invGui then
-            for _, child in ipairs(invGui:GetDescendants()) do
-                if child.Name == "Notification" and child:IsA("TextLabel") then
-                    local count = tonumber(child.Text)
-                    if count then
-                        local parent = child.Parent
-                        while parent and parent ~= invGui do
-                            local pn = parent.Name
-                            if pn == "Fish" then progress.FishCount = count; break
-                            elseif pn == "Baits" then progress.BaitCount = count; break
-                            elseif pn == "Items" then progress.ItemCount = count; break
-                            elseif pn == "Rods" then progress.RodCount = count; break
-                            elseif pn == "Charms" then progress.CharmCount = count; break
-                            elseif pn == "Emotes" then progress.EmoteCount = count; break
-                            elseif pn == "Pets" then progress.PetCount = count; break
-                            end
-                            parent = parent.Parent
-                        end
-                    end
-                end
-            end
-        end
-    end)
+    -- Wrap to BaseAdapter interface
+    local wrapper = setmetatable({}, {__index = BaseAdapter})
+    wrapper.__index = wrapper
+    wrapper.gameName = adapterTable.gameName or gameName
 
-    -- 5. Coins from Events ScreenGui (CurrencyCounter parent only)
-    pcall(function()
-        local eventsGui = findFishItGui("Events")
-        if eventsGui then
-            for _, child in ipairs(eventsGui:GetDescendants()) do
-                if child.Name == "Counter" and child:IsA("TextLabel") then
-                    local parent = child.Parent
-                    if parent and parent.Name == "CurrencyCounter" then
-                        progress.Coins = parseFishItNumber(child.Text)
-                        break
-                    end
-                end
-            end
-        end
-    end)
+    function wrapper.new()
+        return setmetatable(BaseAdapter.new(adapterTable.gameName or gameName), wrapper)
+    end
 
-    return progress
+    function wrapper:collectAll()
+        local env = {
+            GUI = GUI,
+            player = LocalPlayer,
+            Http = Http,
+            CONFIG = CONFIG,
+        }
+        local ok2, data = pcall(adapterTable.collect, env)
+        if not ok2 then
+            GUI.setLine("adapter_collect", "collect() error: " .. tostring(data):sub(1, 80), COLOR_ERR)
+            return BaseAdapter.collectAll(self)
+        end
+        return data or {}
+    end
+
+    GUI.setLine("adapter_load", "Adapter loaded: " .. gameName, COLOR_LIVE)
+    return wrapper
 end
 
 -- ============================================
--- getServerData: best-effort scrape of server/event info from GUI
--- (remotes inaccessible, so we scrape what's visible)
+-- FISH IT: loaded via AdapterLoader in main() (needs GUI init first)
 -- ============================================
-function FishItAdapter:getServerData()
-    local serverData = {}
-
-    -- 1. Server luck from Events ScreenGui
-    pcall(function()
-        local eventsGui = findFishItGui("Events")
-        if eventsGui then
-            local allText = scrapeAllText(eventsGui, 5)
-            for _, entry in ipairs(allText) do
-                if string.find(entry.text, "Server Luck", 1, true) then
-                    serverData.ServerLuck = entry.text
-                elseif string.find(entry.text, "Friend Luck", 1, true) then
-                    serverData.FriendLuck = entry.text
-                end
-            end
-        end
-    end)
-
-    -- 2. Fishing boost from Charge ScreenGui
-    pcall(function()
-        local chargeGui = findFishItGui("Charge")
-        if chargeGui then
-            local allText = scrapeAllText(chargeGui, 4)
-            for _, entry in ipairs(allText) do
-                if string.find(entry.text, "Luck", 1, true) then
-                    serverData.LuckCharge = entry.text
-                end
-            end
-        end
-    end)
-
-    -- 3. Active boosts from FishingCircles
-    pcall(function()
-        local fcGui = findFishItGui("FishingCircles")
-        if fcGui then
-            local allText = scrapeAllText(fcGui, 4)
-            for _, entry in ipairs(allText) do
-                if string.find(entry.text, "Boost", 1, true) then
-                    serverData.ActiveBoost = entry.text
-                end
-            end
-        end
-    end)
-
-    -- 4. Depth from DepthScreen
-    pcall(function()
-        local depthGui = findFishItGui("DepthScreen")
-        if depthGui then
-            local allText = scrapeAllText(depthGui, 4)
-            for _, entry in ipairs(allText) do
-                if string.find(entry.text, "Depth", 1, true) then
-                    serverData.Depth = entry.text
-                end
-            end
-        end
-    end)
-
-    if next(serverData) then return serverData end
-    return nil
-end
-
-AdapterRegistry.register("fish_it", FishItAdapter)
+-- See main() for AdapterLoader.load("fish_it") call
 
 -- ============================================
 -- GROW A GARDEN ADAPTER (stub - needs game scan)
@@ -2339,7 +1832,14 @@ local function main()
     -- Detect game
     local gameName, placeId = GameDetector.detect()
 
-    -- Get adapter
+    if gameName and not AdapterRegistry.get(gameName) then
+        GUI.setLine("adapter_fetch", "Loading adapter: " .. gameName .. "...", COLOR_INIT)
+        local loaded = AdapterLoader.load(gameName)
+        if loaded then
+            AdapterRegistry.register(gameName, loaded)
+        end
+    end
+
     local adapterClass = nil
     if gameName then
         adapterClass = AdapterRegistry.get(gameName)
