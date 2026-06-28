@@ -1622,7 +1622,7 @@ function FishItAdapter:getStats()
     pcall(function()
         local settingsGui = findFishItGui("Settings")
         if settingsGui then
-            local allText = scrapeAllText(settingsGui, 5)
+            local allText = scrapeAllText(settingsGui, 10)
             for _, entry in ipairs(allText) do
                 local txt = entry.text
                 if string.find(txt, "Bonus Luck", 1, true) then
@@ -1637,8 +1637,14 @@ function FishItAdapter:getStats()
                 elseif string.find(txt, "Shiny Chance", 1, true) then
                     local pct = string.match(txt, "(%d+%.?%d*)%%")
                     stats.ShinyChancePct = pct and tonumber(pct) or nil
-                elseif string.find(txt, "Playtime", 1, true) or string.match(txt, "%d+h %d+m") then
+                elseif string.match(txt, "%d+ Hours? %d+ Minutes?") or string.match(txt, "%d+h %d+m") then
                     stats.Playtime = txt
+                elseif string.find(txt, "Monthly Fish", 1, true) then
+                    local num = string.match(txt, "Monthly Fish:%s*(%d+)")
+                    stats.MonthlyFish = num and tonumber(num) or nil
+                elseif string.find(txt, "Monthly Levels") then
+                    local num = string.match(txt, "Monthly Levels:%s*(%d+)")
+                    stats.MonthlyLevels = num and tonumber(num) or nil
                 end
             end
         end
@@ -1668,37 +1674,36 @@ end
 function FishItAdapter:getCurrency()
     local currency = {}
 
-    -- 1. Coins from Events ScreenGui CurrencyCounter
+    -- 1. Coins from Events ScreenGui CurrencyCounter/Counter
     pcall(function()
         local eventsGui = findFishItGui("Events")
         if eventsGui then
-            local counter = findLabelByText(eventsGui, "Counter", 3)
-            -- CurrencyCounter has a child with Counter name showing "28.16M"
             for _, child in ipairs(eventsGui:GetDescendants()) do
                 if child.Name == "Counter" and child:IsA("TextLabel") then
-                    local coins = parseFishItNumber(child.Text)
-                    if coins then
-                        currency.Coins = coins
-                        break
+                    local parent = child.Parent
+                    if parent and parent.Name == "CurrencyCounter" then
+                        local coins = parseFishItNumber(child.Text)
+                        if coins then
+                            currency.Coins = coins
+                            break
+                        end
                     end
                 end
             end
         end
     end)
 
-    -- 2. Fallback: Coins from Rod Shop / Bait Shop / Boat Shop CurrencyFrame
+    -- 2. Fallback: any Counter with parseable number (skip "0" and "?")
     if not currency.Coins then
         pcall(function()
-            for _, guiName in ipairs({"Rod Shop", "Bait Shop", "Boat Shop"}) do
-                local shopGui = findFishItGui(guiName)
-                if shopGui then
-                    for _, child in ipairs(shopGui:GetDescendants()) do
-                        if child.Name == "Counter" and child:IsA("TextLabel") then
-                            local coins = parseFishItNumber(child.Text)
-                            if coins then
-                                currency.Coins = coins
-                                return
-                            end
+            local eventsGui = findFishItGui("Events")
+            if eventsGui then
+                for _, child in ipairs(eventsGui:GetDescendants()) do
+                    if child.Name == "Counter" and child:IsA("TextLabel") then
+                        local coins = parseFishItNumber(child.Text)
+                        if coins and coins > 0 then
+                            currency.Coins = coins
+                            break
                         end
                     end
                 end
@@ -1790,42 +1795,29 @@ function FishItAdapter:getInventory()
         end
     end)
 
-    -- 3. Inventory ScreenGui: scrape item names from data containers
-    -- Items have format "ItemName-uuid" (e.g. "Jellyfish-c072be7f-...")
+    -- 3. Inventory ScreenGui: scrape equipped items count + ability info
     pcall(function()
         local invGui = findFishItGui("Inventory")
         if invGui then
-            -- Collect all TextLabels in Inventory GUI
-            local allText = scrapeAllText(invGui, 7)
+            local allText = scrapeAllText(invGui, 12)
 
-            -- Track seen items to avoid duplicates
             local seen = {}
             for _, entry in ipairs(allText) do
                 local txt = entry.text
 
-                -- Item name with UUID pattern: "Name-xxxxxxxx-..."
                 local itemName = string.match(txt, "^(.+)%-%x%x%x%x%x%x%x%x%-%x+")
                 if itemName and not seen[txt] then
                     seen[txt] = true
-                    -- Determine category from path
                     local category = "items"
                     local lowerPath = string.lower(entry.path)
-                    if string.find(lowerPath, "fish", 1, true) then
-                        category = "fish"
-                    elseif string.find(lowerPath, "bait", 1, true) then
-                        category = "baits"
-                    elseif string.find(lowerPath, "rod", 1, true) then
-                        category = "rods"
-                    elseif string.find(lowerPath, "charm", 1, true) then
-                        category = "charms"
-                    elseif string.find(lowerPath, "pet", 1, true) then
-                        category = "pets"
-                    elseif string.find(lowerPath, "emote", 1, true) then
-                        category = "emotes"
-                    elseif string.find(lowerPath, "ability", 1, true) then
-                        category = "abilities"
-                    elseif string.find(lowerPath, "enchant", 1, true) then
-                        category = "enchants"
+                    if string.find(lowerPath, "fish", 1, true) then category = "fish"
+                    elseif string.find(lowerPath, "bait", 1, true) then category = "baits"
+                    elseif string.find(lowerPath, "rod", 1, true) then category = "rods"
+                    elseif string.find(lowerPath, "charm", 1, true) then category = "charms"
+                    elseif string.find(lowerPath, "pet", 1, true) then category = "pets"
+                    elseif string.find(lowerPath, "emote", 1, true) then category = "emotes"
+                    elseif string.find(lowerPath, "ability", 1, true) then category = "abilities"
+                    elseif string.find(lowerPath, "enchant", 1, true) then category = "enchants"
                     end
 
                     table.insert(inventory, {
@@ -1838,7 +1830,6 @@ function FishItAdapter:getInventory()
                 end
             end
 
-            -- Also extract weights from WeightFrame labels (e.g. "25.5kg", "232k kg")
             for _, entry in ipairs(allText) do
                 if string.find(entry.path, "WeightFrame", 1, true) then
                     local weight = string.match(entry.text, "([%d%.]+%s*[kKmM]?%s*kg)")
@@ -1853,6 +1844,21 @@ function FishItAdapter:getInventory()
                         })
                     end
                 end
+            end
+
+            local abilityName = nil
+            for _, entry in ipairs(allText) do
+                if string.find(entry.path, "AbilityName", 1, true) then
+                    abilityName = entry.text
+                end
+            end
+            if abilityName and #abilityName > 0 then
+                table.insert(inventory, {
+                    name = abilityName,
+                    type = "ability",
+                    equipped = true,
+                    category = "abilities",
+                })
             end
         end
     end)
@@ -1909,47 +1915,43 @@ function FishItAdapter:getProgress()
         end
     end)
 
-    -- 3. Fish bag capacity from Inventory ScreenGui (e.g. "480/4,500")
+    -- 3. Equipped items/pets fractions from Inventory ScreenGui
     pcall(function()
         local invGui = findFishItGui("Inventory")
         if invGui then
-            local allText = scrapeAllText(invGui, 6)
+            local allText = scrapeAllText(invGui, 12)
             for _, entry in ipairs(allText) do
                 local frac = parseFraction(entry.text)
                 if frac then
                     local lowerPath = string.lower(entry.path)
-                    if string.find(lowerPath, "fish", 1, true) or string.find(lowerPath, "bag", 1, true) then
-                        progress.FishBag = frac
-                    elseif string.find(lowerPath, "rod", 1, true) then
-                        progress.Rods = frac
-                    elseif string.find(lowerPath, "emote", 1, true) then
-                        progress.Emotes = frac
+                    if string.find(lowerPath, "pet", 1, true) then
+                        progress.EquippedPets = frac
+                    elseif string.find(lowerPath, "inventory2", 1, true) or string.find(entry.text, "Equipped Items", 1, true) then
+                        progress.EquippedItems = frac
                     end
                 end
             end
         end
     end)
 
-    -- 4. Category counts from Inventory notification badges (e.g. "45", "412")
+    -- 4. Category counts from Inventory notification badges
     pcall(function()
         local invGui = findFishItGui("Inventory")
         if invGui then
-            -- Look for Notification badges with count text
             for _, child in ipairs(invGui:GetDescendants()) do
                 if child.Name == "Notification" and child:IsA("TextLabel") then
                     local count = tonumber(child.Text)
                     if count then
-                        -- Determine which category by walking up to find category parent
                         local parent = child.Parent
                         while parent and parent ~= invGui do
-                            local pn = string.lower(parent.Name)
-                            if pn == "fish" then progress.FishCount = count; break
-                            elseif pn == "baits" then progress.BaitCount = count; break
-                            elseif pn == "items" then progress.ItemCount = count; break
-                            elseif pn == "rods" then progress.RodCount = count; break
-                            elseif pn == "charms" then progress.CharmCount = count; break
-                            elseif pn == "emotes" then progress.EmoteCount = count; break
-                            elseif pn == "pets" then progress.PetCount = count; break
+                            local pn = parent.Name
+                            if pn == "Fish" then progress.FishCount = count; break
+                            elseif pn == "Baits" then progress.BaitCount = count; break
+                            elseif pn == "Items" then progress.ItemCount = count; break
+                            elseif pn == "Rods" then progress.RodCount = count; break
+                            elseif pn == "Charms" then progress.CharmCount = count; break
+                            elseif pn == "Emotes" then progress.EmoteCount = count; break
+                            elseif pn == "Pets" then progress.PetCount = count; break
                             end
                             parent = parent.Parent
                         end
@@ -1959,14 +1961,17 @@ function FishItAdapter:getProgress()
         end
     end)
 
-    -- 5. Coins from Events ScreenGui (useful for progress tracking)
+    -- 5. Coins from Events ScreenGui (CurrencyCounter parent only)
     pcall(function()
         local eventsGui = findFishItGui("Events")
         if eventsGui then
             for _, child in ipairs(eventsGui:GetDescendants()) do
                 if child.Name == "Counter" and child:IsA("TextLabel") then
-                    progress.Coins = parseFishItNumber(child.Text)
-                    break
+                    local parent = child.Parent
+                    if parent and parent.Name == "CurrencyCounter" then
+                        progress.Coins = parseFishItNumber(child.Text)
+                        break
+                    end
                 end
             end
         end
