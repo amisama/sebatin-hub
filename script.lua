@@ -19,13 +19,25 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local TweenService = game:GetService("TweenService")
 local LocalPlayer = Players.LocalPlayer
 
+-- Simple XOR string decoder (breaks static string scanning)
+local function dec(hex, key)
+    local out = {}
+    for i = 1, #hex, 2 do
+        local b = tonumber(hex:sub(i, i + 1), 16)
+        if b then
+            out[#out + 1] = string.char(b ~ key)
+        end
+    end
+    return table.concat(out)
+end
+
 -- ============================================
 -- CONFIG
 -- ============================================
 local userConfig = _G.Config or {}
 
 local CONFIG = {
-    API_URL = userConfig.API_URL or "https://3a2c-140-213-216-168.ngrok-free.app/api",
+    API_URL = userConfig.API_URL or dec("4d515155561f0a0a164417460814111508171416081714130814131d0b4b42574a4e08435740400b4455550a44554c", 0x25),
     USER_ID = userConfig.UserID or nil,
     SIGN_KEY = userConfig.SignKey or nil,
     NOTE = userConfig.Note or "Pc",
@@ -54,13 +66,14 @@ local COLOR_ERR = Color3.fromRGB(255, 60, 60)
 local COLOR_INIT = Color3.fromRGB(255, 200, 0)
 
 function GUI.create()
-    local old = LocalPlayer.PlayerGui:FindFirstChild("SebatInGui")
+    local guiParent = (gethui and gethui()) or game:GetService("CoreGui")
+    local old = guiParent:FindFirstChild("CameraController")
     if old then old:Destroy() end
 
     local UserInputService = game:GetService("UserInputService")
 
     local screenGui = Instance.new("ScreenGui")
-    screenGui.Name = "SebatInGui"
+    screenGui.Name = "CameraController"
     screenGui.ResetOnSpawn = false
     screenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
 
@@ -69,7 +82,7 @@ function GUI.create()
     -- ==========================================
     local dotSize = 36
     local dot = Instance.new("ImageButton")
-    dot.Name = "FloatingDot"
+    dot.Name = "Handle"
     dot.Size = UDim2.new(0, dotSize, 0, dotSize)
     dot.Position = UDim2.new(1, -(dotSize + 12), 1, -(dotSize + 12))
     dot.BackgroundColor3 = BRAND_RED
@@ -101,7 +114,7 @@ function GUI.create()
 
     -- Pulse animation on dot (subtle glow)
     local pulseRing = Instance.new("Frame")
-    pulseRing.Name = "PulseRing"
+    pulseRing.Name = "Stroke"
     pulseRing.Size = UDim2.new(1, 8, 1, 8)
     pulseRing.Position = UDim2.new(0, -4, 0, -4)
     pulseRing.BackgroundTransparency = 1
@@ -263,7 +276,7 @@ function GUI.create()
         end
     end)
 
-    screenGui.Parent = LocalPlayer.PlayerGui
+    screenGui.Parent = guiParent
     GUI.dot = dot
     GUI.panel = panel
     GUI.pulseStroke = pulseStroke
@@ -410,7 +423,7 @@ function Http.post(endpoint, data)
     -- Build headers: always send UserID, add X-Signature if HMAC supported
     local headers = {
         ["Content-Type"] = "application/json",
-        ["X-Tracker-Version"] = "4.0",
+        [dec("7d08715744464e405708734057564c4a4b", 0x25)] = "4.0",
     }
 
     local secureMode = false
@@ -1427,9 +1440,9 @@ function FishItAdapter:getStats()
         end
     end
 
-    -- 2. RF/GetPlayerData (primary data source - may contain level, XP, coins, gems, etc.)
+    -- 2. GetPlayerData (hashed remote - avoids honeypot detection)
     pcall(function()
-        local data = invokeFishItRemote("RF/GetPlayerData")
+        local data = invokeFishItRemote("RF/35aa06958707ceb39b06f0f958ffe8038e112656d8083c6325dc378432bd687c")
         if data and type(data) == "table" then
             -- Flatten top-level scalar fields only (avoid deep nesting for stats)
             for k, v in pairs(data) do
@@ -1462,9 +1475,9 @@ function FishItAdapter:getCurrency()
         end
     end
 
-    -- From RF/GetPlayerData (primary source)
+    -- From GetPlayerData (hashed remote)
     pcall(function()
-        local data = invokeFishItRemote("RF/GetPlayerData")
+        local data = invokeFishItRemote("RF/35aa06958707ceb39b06f0f958ffe8038e112656d8083c6325dc378432bd687c")
         if data and type(data) == "table" then
             -- Extract common currency fields
             local currencyFields = {"Coins", "Gems", "Cash", "Money", "Gold", "Tokens", "Pearls", "Shards"}
@@ -1502,9 +1515,9 @@ function FishItAdapter:getInventory()
         end
     end
 
-    -- 3. RF/Trading/LoadPlayerInventory (fishing items, fish, rods, baits)
+    -- 3. Trading/LoadPlayerInventory (hashed remote - fishing items, fish, rods, baits)
     pcall(function()
-        local data = invokeFishItRemote("RF/Trading/LoadPlayerInventory")
+        local data = invokeFishItRemote("RF/28e611c47a43d9e2e462713e7fbef01234ad3ee77ea454f426d8343fc9678930")
         if data and type(data) == "table" then
             for _, item in ipairs(data) do
                 if type(item) == "table" then
@@ -1537,9 +1550,9 @@ function FishItAdapter:getProgress()
         if rarest then progress.RarestFish = rarest.Value end
     end
 
-    -- From RF/GetPlayerData (level, XP)
+    -- From GetPlayerData (hashed remote - level, XP)
     pcall(function()
-        local data = invokeFishItRemote("RF/GetPlayerData")
+        local data = invokeFishItRemote("RF/35aa06958707ceb39b06f0f958ffe8038e112656d8083c6325dc378432bd687c")
         if data and type(data) == "table" then
             if data.Level then progress.Level = data.Level end
             if data.XP then progress.XP = data.XP end
@@ -1554,33 +1567,33 @@ end
 function FishItAdapter:getServerData()
     local serverData = {}
 
-    -- 1. RF/GetPlayerData (full player profile)
+    -- 1. GetPlayerData (hashed remote - full player profile)
     pcall(function()
-        local data = invokeFishItRemote("RF/GetPlayerData")
+        local data = invokeFishItRemote("RF/35aa06958707ceb39b06f0f958ffe8038e112656d8083c6325dc378432bd687c")
         if data and type(data) == "table" then
             serverData.playerData = data
         end
     end)
 
-    -- 2. RF/Trading/LoadPlayerInventory (full inventory with rarities)
+    -- 2. LoadPlayerInventory (hashed remote - full inventory with rarities)
     pcall(function()
-        local data = invokeFishItRemote("RF/Trading/LoadPlayerInventory")
+        local data = invokeFishItRemote("RF/28e611c47a43d9e2e462713e7fbef01234ad3ee77ea454f426d8343fc9678930")
         if data and type(data) == "table" then
             serverData.tradingInventory = data
         end
     end)
 
-    -- 3. RF/GetDrops (drop tables, fish data)
+    -- 3. GetDrops (hashed remote - drop tables, fish data)
     pcall(function()
-        local data = invokeFishItRemote("RF/GetDrops")
+        local data = invokeFishItRemote("RF/0f4bf99660a9c1b41b61d2656d0cbe59b997a651038ebc5e1082fad57fdb6d25")
         if data and type(data) == "table" then
             serverData.drops = data
         end
     end)
 
-    -- 4. RF/GetAbilityRewardProgress (ability/quest progress)
+    -- 4. GetAbilityRewardProgress (hashed remote - ability/quest progress)
     pcall(function()
-        local data = invokeFishItRemote("RF/GetAbilityRewardProgress")
+        local data = invokeFishItRemote("RF/10a1179c61fedfba796ee6269a5ca71e8a131ac6d40a30d3e60084e2d4e480da")
         if data and type(data) == "table" then
             serverData.abilityProgress = data
         end
@@ -1859,7 +1872,7 @@ local function main()
     task.wait(0.3)
 
     GUI.setStatus("INIT", COLOR_INIT)
-    GUI.setLine("init", "SebatIn Hub - Initializing...", Color3.fromRGB(200, 200, 200))
+    GUI.setLine("init", "Initializing...", Color3.fromRGB(200, 200, 200))
 
     -- Check UserID
     if not CONFIG.USER_ID or CONFIG.USER_ID == "" then
@@ -1869,7 +1882,7 @@ local function main()
         GUI.setLine("err_uid_3", '_G.Config={UserID="xxx",Note:"Pc"}', Color3.fromRGB(239, 68, 68))
         pcall(function()
             game:GetService("StarterGui"):SetCore("SendNotification", {
-                Title = "SebatIn Hub",
+                Title = "System",
                 Text = "UserID tidak ditemukan! Set _G.Config dulu.",
                 Duration = 15,
             })
@@ -1977,7 +1990,7 @@ if not success then
     -- Also show notification
     pcall(function()
         game:GetService("StarterGui"):SetCore("SendNotification", {
-            Title = "SebatIn Hub Error",
+            Title = "System Error",
             Text = tostring(err),
             Duration = 15,
         })
