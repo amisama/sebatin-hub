@@ -19,13 +19,16 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local TweenService = game:GetService("TweenService")
 local LocalPlayer = Players.LocalPlayer
 
+-- XOR helper (bit32 for old executors, ~ for Luau)
+local bxor = bit32 and bit32.bxor or function(a, b) return a ~ b end
+
 -- Simple XOR string decoder (breaks static string scanning)
 local function dec(hex, key)
     local out = {}
     for i = 1, #hex, 2 do
         local b = tonumber(hex:sub(i, i + 1), 16)
         if b then
-            out[#out + 1] = string.char(b ~ key)
+            out[#out + 1] = string.char(bxor(b, key))
         end
     end
     return table.concat(out)
