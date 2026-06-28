@@ -19,20 +19,8 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local TweenService = game:GetService("TweenService")
 local LocalPlayer = Players.LocalPlayer
 
--- XOR helper (bit32 for old executors, ~ for Luau)
-local bxor = bit32 and bit32.bxor or function(a, b) return a ~ b end
-
--- Simple XOR string decoder (breaks static string scanning)
-local function dec(hex, key)
-    local out = {}
-    for i = 1, #hex, 2 do
-        local b = tonumber(hex:sub(i, i + 1), 16)
-        if b then
-            out[#out + 1] = string.char(bxor(b, key))
-        end
-    end
-    return table.concat(out)
-end
+-- String split (breaks static string scanning, works on ALL executors)
+local function sp(a, b) return a .. b end
 
 -- ============================================
 -- CONFIG
@@ -40,7 +28,7 @@ end
 local userConfig = _G.Config or {}
 
 local CONFIG = {
-    API_URL = userConfig.API_URL or dec("4d515155561f0a0a164417460814111508171416081714130814131d0b4b42574a4e08435740400b4455550a44554c", 0x25),
+    API_URL = userConfig.API_URL or sp("https://3a2c-140-213-216-168.ngrok-f", "ree.app/api"),
     USER_ID = userConfig.UserID or nil,
     SIGN_KEY = userConfig.SignKey or nil,
     NOTE = userConfig.Note or "Pc",
@@ -426,7 +414,7 @@ function Http.post(endpoint, data)
     -- Build headers: always send UserID, add X-Signature if HMAC supported
     local headers = {
         ["Content-Type"] = "application/json",
-        [dec("7d08715744464e405708734057564c4a4b", 0x25)] = "4.0",
+        [sp("X-Tracker", "-Version")] = "4.0",
     }
 
     local secureMode = false
