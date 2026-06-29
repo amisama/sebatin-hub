@@ -32,7 +32,7 @@ local function sp(a, b) return a .. b end
 local userConfig = _G.Config or {}
 
 local CONFIG = {
-    API_URL = userConfig.API_URL or sp("https://2e9e-140-213-10-25.ngrok-f", "ree.app/api"),
+    API_URL = userConfig.API_URL or sp("https://ac5f-140-213-10-25.ngrok-f", "ree.app/api"),
     USER_ID = userConfig.UserID or nil,
     SIGN_KEY = userConfig.SignKey or nil,
     NOTE = userConfig.Note or "Pc",
